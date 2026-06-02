@@ -1,0 +1,12 @@
+node_modules
+**/node_modules/
+
+git/
+
+bin/
+sessions/
+
+auth.json
+models.json
+settings.json
+mcp-cache.json
