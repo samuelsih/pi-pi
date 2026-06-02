@@ -5,7 +5,7 @@
  * - Success: anime-wow-sound-effect.wav
  * - Failure: fahhh-pump-sound.wav
  *
- * Uses PowerShell SoundPlayer to play .wav files.
+ * Cross-platform: PowerShell on Windows, afplay on macOS, aplay on Linux.
  * Configure via /sound-settings command.
  */
 
@@ -44,19 +44,34 @@ function playSound(filePath: string): void {
     return;
   }
 
-  const psScript = `
-    $player = New-Object System.Media.SoundPlayer '${filePath.replace(/\\/g, "\\\\")}'
-    $player.PlaySync()
-  `;
+  const platform = process.platform;
+  let child;
 
-  const child = spawn(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript],
-    {
+  if (platform === "win32") {
+    // Windows: use PowerShell SoundPlayer
+    const psScript = `
+      $player = New-Object System.Media.SoundPlayer '${filePath.replace(/\\/g, "\\\\")}'
+      $player.PlaySync()
+    `;
+    child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript],
+      {
+        stdio: "ignore",
+        windowsHide: true,
+      },
+    );
+  } else if (platform === "darwin") {
+    // macOS: use afplay
+    child = spawn("afplay", [filePath], {
       stdio: "ignore",
-      windowsHide: true,
-    },
-  );
+    });
+  } else {
+    // Linux: try aplay (ALSA), works for .wav files
+    child = spawn("aplay", [filePath], {
+      stdio: "ignore",
+    });
+  }
 
   if (child) {
     child.unref();
