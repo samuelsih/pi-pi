@@ -67,8 +67,8 @@ function playSound(filePath: string): void {
       stdio: "ignore",
     });
   } else {
-    // Linux: try aplay (ALSA), works for .wav files
-    child = spawn("aplay", [filePath], {
+    // Linux: try pipewire, works for .wav files
+    child = spawn("pw-play", [filePath], {
       stdio: "ignore",
     });
   }

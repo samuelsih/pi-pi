@@ -5,7 +5,11 @@ description: Remove AI-generated code slop and clean up code style
 
 # Remove AI code slop
 
-Check the diff against main and remove AI-generated slop introduced in the branch.
+Check the diff against main and remove AI-generated slop introduced in the branch. To get the list files, use this command:
+
+```sh
+git status --short | awk '{print $2}'
+```
 
 ## Focus Areas
 

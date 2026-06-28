@@ -9,3 +9,4 @@ sessions/
 auth.json
 settings.json
 mcp-cache.json
+trust.json
