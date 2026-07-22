@@ -49,57 +49,31 @@ function matchesPattern(path: string, patterns: Pattern[]): boolean {
 	return matched;
 }
 
-async function loadPatterns(cwd: string): Promise<Pattern[]> {
-	const patterns: Pattern[] = [];
-
+async function loadPatternFile(cwd: string, ...pathSegments: string[]): Promise<Pattern[]> {
 	try {
-		const content = await readFile(join(cwd, ".gitignore"), "utf-8");
-		patterns.push(...content.split("\n").map(parsePattern).filter((p): p is Pattern => p !== null));
-	} catch {}
-
-	return patterns;
-}
-
-async function loadExcludePatterns(cwd: string): Promise<Pattern[]> {
-	const patterns: Pattern[] = [];
-
-	try {
-		const content = await readFile(join(cwd, ".git", "info", "exclude"), "utf-8");
-		patterns.push(...content.split("\n").map(parsePattern).filter((p): p is Pattern => p !== null));
-	} catch {}
-
-	return patterns;
+		const content = await readFile(join(cwd, ...pathSegments), "utf-8");
+		return content.split("\n").map(parsePattern).filter((p): p is Pattern => p !== null);
+	} catch {
+		return [];
+	}
 }
 
 async function loadPrompts(cwd: string): Promise<PromptTemplate[]> {
-	const promptsDir = join(cwd, CONFIG_DIR_NAME, "prompts");
-	const prompts: PromptTemplate[] = [];
-
 	try {
-		const files = await readdir(promptsDir);
-		for (const file of files) {
-			if (!file.endsWith(".md")) continue;
-
-			const filePath = join(promptsDir, file);
-			const content = await readFile(filePath, "utf-8");
-			const name = basename(file, ".md");
-
-			let description: string | undefined;
-			const descMatch = content.match(/description:\s*(.+?)(?:\n|$)/);
-			if (descMatch) description = descMatch[1].trim();
-
-			prompts.push({ name, description });
-		}
-	} catch {}
-
-	return prompts;
+		const files = await readdir(join(cwd, CONFIG_DIR_NAME, "prompts"));
+		return Promise.all(
+			files.filter(f => f.endsWith(".md")).map(async (file) => {
+				const content = await readFile(join(cwd, CONFIG_DIR_NAME, "prompts", file), "utf-8");
+				const description = content.match(/description:\s*(.+?)(?:\n|$)/)?.[1]?.trim();
+				return { name: basename(file, ".md"), description };
+			})
+		);
+	} catch {
+		return [];
+	}
 }
 
-function escapeRegex(str: string): string {
-	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-async function searchFilesWithNoIgnore(cwd: string, query: string, maxResults: number = 50): Promise<AutocompleteItem[]> {
+function searchFilesWithNoIgnore(cwd: string, query: string, maxResults = 50): Promise<AutocompleteItem[]> {
 	return new Promise((resolve) => {
 		const args = [
 			"--base-directory", cwd,
@@ -110,17 +84,13 @@ async function searchFilesWithNoIgnore(cwd: string, query: string, maxResults: n
 			"--hidden",
 			"--no-ignore",
 			"--exclude", ".git",
-			"--exclude", ".git/*",
-			"--exclude", ".git/**",
 		];
 
 		if (query) {
-			args.push(escapeRegex(query));
+			args.push(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 		}
 
-		const child = spawn("fd", args, {
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+		const child = spawn("fd", args, { stdio: ["ignore", "pipe", "pipe"] });
 
 		let stdout = "";
 		let resolved = false;
@@ -132,44 +102,31 @@ async function searchFilesWithNoIgnore(cwd: string, query: string, maxResults: n
 		};
 
 		child.stdout.setEncoding("utf-8");
-		child.stdout.on("data", (chunk) => {
-			stdout += chunk;
-		});
-
+		child.stdout.on("data", (chunk) => { stdout += chunk; });
 		child.on("error", () => finish([]));
 
-		// Timeout after 2 seconds
 		const timer = setTimeout(() => {
-			if (!resolved) {
-				child.kill("SIGKILL");
-				finish([]);
-			}
+			if (!resolved) { child.kill("SIGKILL"); finish([]); }
 		}, 2000);
 
 		child.on("close", (code) => {
 			clearTimeout(timer);
-			if (code !== 0 || !stdout) {
-				finish([]);
-				return;
-			}
+			if (code !== 0 || !stdout) return finish([]);
 
-			const lines = stdout.trim().split("\n").filter(Boolean);
-			const items: AutocompleteItem[] = [];
-
-			for (const line of lines) {
+			const items = stdout.trim().split("\n").filter(Boolean).flatMap((line) => {
 				const isDirectory = line.endsWith("/");
 				const displayPath = isDirectory ? line.slice(0, -1) : line;
 
 				if (displayPath === ".git" || displayPath.startsWith(".git/") || displayPath.includes("/.git/")) {
-					continue;
+					return [];
 				}
 
-				items.push({
+				return [{
 					value: "@" + displayPath + (isDirectory ? "/" : ""),
 					label: displayPath + (isDirectory ? "/" : ""),
 					description: isDirectory ? "directory" : "file",
-				});
-			}
+				}];
+			});
 
 			resolve(items);
 		});
@@ -182,85 +139,76 @@ export default function (pi: ExtensionAPI): void {
 	let prompts: PromptTemplate[] = [];
 	let loadedAt = 0;
 
-	pi.on("session_start", async (_event, ctx) => {
-		gitignorePatterns = await loadPatterns(ctx.cwd);
-		excludePatterns = await loadExcludePatterns(ctx.cwd);
-		prompts = await loadPrompts(ctx.cwd);
+	const reload = async (cwd: string) => {
+		[gitignorePatterns, excludePatterns, prompts] = await Promise.all([
+			loadPatternFile(cwd, ".gitignore"),
+			loadPatternFile(cwd, ".git", "info", "exclude"),
+			loadPrompts(cwd),
+		]);
 		loadedAt = Date.now();
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		await reload(ctx.cwd);
 
 		ctx.ui.addAutocompleteProvider((current: AutocompleteProvider): AutocompleteProvider => ({
 			triggerCharacters: current.triggerCharacters,
 			async getSuggestions(lines, cursorLine, cursorCol, options) {
 				const result = await current.getSuggestions(lines, cursorLine, cursorCol, options);
 
-				const now = Date.now();
-				if (now - loadedAt > 5000) {
-					gitignorePatterns = await loadPatterns(ctx.cwd);
-					excludePatterns = await loadExcludePatterns(ctx.cwd);
-					prompts = await loadPrompts(ctx.cwd);
-					loadedAt = now;
+				if (Date.now() - loadedAt > 5000) {
+					await reload(ctx.cwd);
 				}
 
 				let items = result?.items ?? [];
 				let prefix = result?.prefix ?? "";
 
-				const currentLine = lines[cursorLine] || "";
-				const beforeCursor = currentLine.slice(0, cursorCol);
+				const beforeCursor = (lines[cursorLine] || "").slice(0, cursorCol);
 				const hasAtPrefix = beforeCursor.includes("@");
 				const slashMatch = hasAtPrefix ? null : beforeCursor.match(/\/(\w*)$/);
 
 				if (slashMatch) {
 					const promptPrefix = slashMatch[1].toLowerCase();
-					const matchingPrompts = prompts.filter((p) =>
-						p.name.toLowerCase().startsWith(promptPrefix)
-					);
+					const matchingPrompts = prompts.filter((p) => p.name.toLowerCase().startsWith(promptPrefix));
 
 					if (matchingPrompts.length > 0) {
-						const promptItems = matchingPrompts.map((p) => ({
-							value: p.name,
-							label: `/${p.name}`,
-							description: p.description || `Prompt: ${p.name}`,
-							icon: "prompt" as const,
-						}));
-
 						const existingValues = new Set(items.map((i) => i.value));
-						const newItems = promptItems.filter((p) => !existingValues.has(p.value));
-						items = [...newItems, ...items];
+						items = [
+							...matchingPrompts
+								.filter((p) => !existingValues.has(p.name))
+								.map((p) => ({
+									value: p.name,
+									label: `/${p.name}`,
+									description: p.description || `Prompt: ${p.name}`,
+								})),
+							...items,
+						];
 					}
 				}
 
 				const atMatch = beforeCursor.match(/@(\S*)$/);
 
 				if (atMatch && excludePatterns.length > 0) {
-					const query = atMatch[1];
-					const excludeMatches = await searchFilesWithNoIgnore(ctx.cwd, query);
-
-					const additionalItems = excludeMatches.filter((item) => {
-						const relPath = item.value.replace(/^@/, "").replace(/\\/g, "/");
-						return matchesPattern(relPath, excludePatterns);
-					});
-
+					const excludeMatches = await searchFilesWithNoIgnore(ctx.cwd, atMatch[1]);
 					const existingValues = new Set(items.map((i) => i.value));
-					const newItems = additionalItems.filter((item) => !existingValues.has(item.value));
-					items = [...newItems, ...items];
-
+					items = [
+						...excludeMatches.filter((item) => {
+							const relPath = item.value.replace(/^@/, "").replace(/\\/g, "/");
+							return !existingValues.has(item.value) && matchesPattern(relPath, excludePatterns);
+						}),
+						...items,
+					];
 					prefix = atMatch[0];
 				}
 
 				if (items.length === 0) return null;
-
 				if (gitignorePatterns.length === 0) return { items, prefix };
 
 				return {
 					items: items.filter((item) => {
 						if (item.value.startsWith("/")) return true;
-
 						const relPath = item.value.replace(/^@/, "").replace(/\\/g, "/");
-
-						if (excludePatterns.length > 0 && matchesPattern(relPath, excludePatterns)) {
-							return true;
-						}
-
+						if (excludePatterns.length > 0 && matchesPattern(relPath, excludePatterns)) return true;
 						return !matchesPattern(relPath, gitignorePatterns);
 					}),
 					prefix,
