@@ -87,7 +87,7 @@ function searchFilesWithNoIgnore(cwd: string, query: string, maxResults = 50): P
 		];
 
 		if (query) {
-			args.push(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+			args.push("^" + query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 		}
 
 		const child = spawn("fd", args, { stdio: ["ignore", "pipe", "pipe"] });
