@@ -102,22 +102,6 @@ function hasSectionHeader(text: string, header: string) {
   return text.split("\n").some((line) => line.trim() === header);
 }
 
-function isHiddenStartupListing(component: Renderable) {
-  const text = renderedText(component);
-  const isThemesListing =
-    hasSectionHeader(text, "[Themes]") &&
-    (text.includes("/themes/") || text.includes(".pi/agent/themes"));
-  const isExtensionsListing =
-    hasSectionHeader(text, "[Extensions]") &&
-    (text.includes("/extensions/") || text.includes(".pi/agent/extensions"));
-
-  return isThemesListing || isExtensionsListing;
-}
-
-function isBlankSpacer(component: Renderable) {
-  return renderedText(component).trim() === "";
-}
-
 function renderHeader(width: number, phase: number, subtitleText: string) {
   const lines = TITLE_LINES.map((line, row) =>
     gradientText(center(line, width), phase + row * 0.045),

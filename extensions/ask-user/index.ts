@@ -34,7 +34,7 @@ import { renderSingleSelectRows, type QuestionOption } from "./single-select-lay
 
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
-const ASK_USER_VERSION: string = (_require("./package.json") as { version: string }).version;
+const ASK_USER_VERSION: string = (_require("../../package.json") as { version: string }).version;
 
 /**
  * Emit a flat `{ type: "string", enum: [...] }` JSON Schema instead of the
