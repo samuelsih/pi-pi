@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteProvider, AutocompleteItem } from "@earendil-works/pi-tui";
 import { readFile, readdir } from "node:fs/promises";
-import { join, relative, basename } from "node:path";
+import { join, basename } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 
@@ -51,25 +51,23 @@ function matchesPattern(path: string, patterns: Pattern[]): boolean {
 
 async function loadPatterns(cwd: string): Promise<Pattern[]> {
 	const patterns: Pattern[] = [];
-	
-	// Load from .gitignore
+
 	try {
 		const content = await readFile(join(cwd, ".gitignore"), "utf-8");
 		patterns.push(...content.split("\n").map(parsePattern).filter((p): p is Pattern => p !== null));
 	} catch {}
-	
+
 	return patterns;
 }
 
 async function loadExcludePatterns(cwd: string): Promise<Pattern[]> {
 	const patterns: Pattern[] = [];
-	
-	// Load from .git/info/exclude
+
 	try {
 		const content = await readFile(join(cwd, ".git", "info", "exclude"), "utf-8");
 		patterns.push(...content.split("\n").map(parsePattern).filter((p): p is Pattern => p !== null));
 	} catch {}
-	
+
 	return patterns;
 }
 
@@ -86,7 +84,6 @@ async function loadPrompts(cwd: string): Promise<PromptTemplate[]> {
 			const content = await readFile(filePath, "utf-8");
 			const name = basename(file, ".md");
 
-			// Extract description from frontmatter
 			let description: string | undefined;
 			const descMatch = content.match(/description:\s*(.+?)(?:\n|$)/);
 			if (descMatch) description = descMatch[1].trim();
@@ -98,7 +95,10 @@ async function loadPrompts(cwd: string): Promise<PromptTemplate[]> {
 	return prompts;
 }
 
-// Search for files using fd with --no-ignore to find git-excluded files
+function escapeRegex(str: string): string {
+	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function searchFilesWithNoIgnore(cwd: string, query: string, maxResults: number = 50): Promise<AutocompleteItem[]> {
 	return new Promise((resolve) => {
 		const args = [
@@ -113,9 +113,9 @@ async function searchFilesWithNoIgnore(cwd: string, query: string, maxResults: n
 			"--exclude", ".git/*",
 			"--exclude", ".git/**",
 		];
-		
+
 		if (query) {
-			args.push(query);
+			args.push(escapeRegex(query));
 		}
 
 		const child = spawn("fd", args, {
@@ -159,17 +159,15 @@ async function searchFilesWithNoIgnore(cwd: string, query: string, maxResults: n
 			for (const line of lines) {
 				const isDirectory = line.endsWith("/");
 				const displayPath = isDirectory ? line.slice(0, -1) : line;
-				
-				// Skip .git paths
+
 				if (displayPath === ".git" || displayPath.startsWith(".git/") || displayPath.includes("/.git/")) {
 					continue;
 				}
 
 				items.push({
-					value: join(cwd, displayPath),
+					value: "@" + displayPath + (isDirectory ? "/" : ""),
 					label: displayPath + (isDirectory ? "/" : ""),
 					description: isDirectory ? "directory" : "file",
-					icon: isDirectory ? "folder" as const : "file" as const,
 				});
 			}
 
@@ -194,7 +192,6 @@ export default function (pi: ExtensionAPI): void {
 			triggerCharacters: current.triggerCharacters,
 			async getSuggestions(lines, cursorLine, cursorCol, options) {
 				const result = await current.getSuggestions(lines, cursorLine, cursorCol, options);
-				if (!result) return null;
 
 				const now = Date.now();
 				if (now - loadedAt > 5000) {
@@ -204,17 +201,18 @@ export default function (pi: ExtensionAPI): void {
 					loadedAt = now;
 				}
 
-				// Add prompt templates for / commands
+				let items = result?.items ?? [];
+				let prefix = result?.prefix ?? "";
+
 				const currentLine = lines[cursorLine] || "";
 				const beforeCursor = currentLine.slice(0, cursorCol);
-				const slashMatch = beforeCursor.match(/\/(\w*)$/);
-
-				let items = result.items;
+				const hasAtPrefix = beforeCursor.includes("@");
+				const slashMatch = hasAtPrefix ? null : beforeCursor.match(/\/(\w*)$/);
 
 				if (slashMatch) {
-					const prefix = slashMatch[1].toLowerCase();
+					const promptPrefix = slashMatch[1].toLowerCase();
 					const matchingPrompts = prompts.filter((p) =>
-						p.name.toLowerCase().startsWith(prefix)
+						p.name.toLowerCase().startsWith(promptPrefix)
 					);
 
 					if (matchingPrompts.length > 0) {
@@ -225,52 +223,47 @@ export default function (pi: ExtensionAPI): void {
 							icon: "prompt" as const,
 						}));
 
-						// Merge prompts with existing items
 						const existingValues = new Set(items.map((i) => i.value));
 						const newItems = promptItems.filter((p) => !existingValues.has(p.value));
 						items = [...newItems, ...items];
 					}
 				}
 
-				// Check if this is a file completion (has @ prefix)
 				const atMatch = beforeCursor.match(/@(\S*)$/);
-				
+
 				if (atMatch && excludePatterns.length > 0) {
-					// Search for files with --no-ignore to find git-excluded files
 					const query = atMatch[1];
 					const excludeMatches = await searchFilesWithNoIgnore(ctx.cwd, query);
-					
-					// Filter to only include files that match .git/info/exclude patterns
+
 					const additionalItems = excludeMatches.filter((item) => {
-						const relPath = relative(ctx.cwd, item.value).replace(/\\/g, "/");
+						const relPath = item.value.replace(/^@/, "").replace(/\\/g, "/");
 						return matchesPattern(relPath, excludePatterns);
 					});
-					
-					// Merge with existing items, avoiding duplicates
+
 					const existingValues = new Set(items.map((i) => i.value));
 					const newItems = additionalItems.filter((item) => !existingValues.has(item.value));
 					items = [...newItems, ...items];
+
+					prefix = atMatch[0];
 				}
 
-				// Filter out git-excluded items (but keep prompt commands and git-excluded files we added)
-				if (gitignorePatterns.length === 0) return { items, prefix: result.prefix };
+				if (items.length === 0) return null;
+
+				if (gitignorePatterns.length === 0) return { items, prefix };
 
 				return {
 					items: items.filter((item) => {
-						// Don't filter pi commands (items starting with /)
 						if (item.value.startsWith("/")) return true;
-						
-						const relPath = relative(ctx.cwd, item.value).replace(/\\/g, "/");
-						
-						// Don't filter files that match .git/info/exclude patterns (they should be visible)
+
+						const relPath = item.value.replace(/^@/, "").replace(/\\/g, "/");
+
 						if (excludePatterns.length > 0 && matchesPattern(relPath, excludePatterns)) {
 							return true;
 						}
-						
-						// Filter out files matching .gitignore patterns
+
 						return !matchesPattern(relPath, gitignorePatterns);
 					}),
-					prefix: result.prefix,
+					prefix,
 				};
 			},
 			applyCompletion: (lines, cursorLine, cursorCol, item, prefix) =>
