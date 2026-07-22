@@ -11,13 +11,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export default function (pi: ExtensionAPI) {
   let noeditActive = false;
 
-  function updateStatus() {
-    if (noeditActive) {
-      pi.setSessionName?.("NOEDIT");
-      // We don't override session name since it may already be set
-    }
-  }
-
   // Register the /noedit toggle command
   pi.registerCommand("noedit", {
     description: "Toggle read-only mode (blocks write/edit/bash)",
@@ -44,6 +37,11 @@ export default function (pi: ExtensionAPI) {
   // Block file-mutating tool calls when noedit is active
   pi.on("tool_call", async (event, ctx) => {
     if (!noeditActive) return undefined;
+
+    // Read-only tools are allowed.
+    if (event.toolName === "read" || event.toolName === "webfetch") {
+      return undefined;
+    }
 
     // Block write and edit unconditionally
     if (event.toolName === "write" || event.toolName === "edit") {
